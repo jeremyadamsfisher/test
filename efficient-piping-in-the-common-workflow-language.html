@@ -1,0 +1,119 @@
+<!DOCTYPE html><html lang=en class=has-navbar-fixed-top><head><title>Jeremy Fisher :: Efficient piping in the Common Workflow Language</title><meta charset=utf-8><meta name=generator content=Pelican><meta name=viewport content="width=device-width, initial-scale=1"><link rel=apple-touch-icon sizes=180x180 href=/apple-touch-icon.png><link rel=icon type=image/png sizes=32x32 href=/favicon-32x32.png><link rel=icon type=image/png sizes=16x16 href=/favicon-16x16.png><link rel=manifest href=/site.webmanifest><link rel=stylesheet href=https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css><link rel=stylesheet href=./theme/css/bulma.css><link rel=stylesheet href=./theme/css/style-1.0.css><script src=./theme/js/navbar.js></script><link rel=stylesheet href=./theme/highlight/monokai.css><script src=./theme/js/highlight.pack.js></script><script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script><script id=MathJax-script async src=https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js></script></head><body id=index class=home><nav id=main-navbar class="navbar is-light is-fixed-top" role=navigation aria-label="main navigation"><div class=navbar-brand><a href=/ class=navbar-item><strong id=brand>Jeremy Fisher</strong></a><a role=button class="navbar-burger burger" aria-label=menu aria-expanded=false data-target=navbarBasicExample><span aria-hidden=true></span><span aria-hidden=true></span><span aria-hidden=true></span></a></div><div id=navbarBasicExample class=navbar-menu><div class=navbar-start></div><div class=navbar-end><a href=./ class=navbar-item>About</a><a class=navbar-item href=/blog>Blog</a></div></div></nav><div class=j-content-container><div class="j-content content"><section><header><h3><a class=article-title href=./efficient-piping-in-the-common-workflow-language.html rel=bookmark title="Permalink to Efficient piping in the Common Workflow Language">Efficient piping in the Common Workflow Language</a></h3></header><footer class=post-info><i class="fa fa-calendar"></i><time class=published datetime=2018-03-04T10:02:00+01:00> Sun 04 March 2018 </time></footer><hr><div class=entry-content><h2>Introduction</h2><p>In the CWL specification for <code>CommandInputParameter</code> (<a href=https://www.commonwl.org/v1.0/CommandLineTool.html#CommandInputParameter>here</a>), there is a tag for streamable, described as:</p><blockquote><p>Only valid when type: File or is an array of items: File.</p><p>A value of true indicates that the file is read or written sequentially without seeking. An implementation may use this flag to indicate whether it is valid to stream file contents using a named pipe. Default: false.</p></blockquote><p>This has intrigued me for a while, since one of the major bottlenecks of our HPC, when running CWL, is network IO. For idiomatic CWL, you specify a command and chain them together with a workflow. However, when a command outputs something in an uncompressed format, it overwhelms the network. So something like the following, which aligns a fastq file with bowtie2, is idiomatic but inefficient:</p><div class=highlight><pre><span></span><code><span class=c1>#align_with_bowtie.cwl</span>
+<span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Workflow</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>inputs</span><span class=p>:</span>
+  <span class=nt>index_basename</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">string</span>
+  <span class=nt>index_dir</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Directory</span>
+  <span class=nt>fastq</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>bam</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+    <span class=nt>outputSource</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">samtools_view/bam</span>
+<span class=nt>steps</span><span class=p>:</span>
+  <span class=nt>bowtie2</span><span class=p>:</span>
+    <span class=nt>in</span><span class=p>:</span>
+      <span class=nt>fastq</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">fastq</span>
+      <span class=nt>index_dir</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">index_dir</span>
+      <span class=nt>index_basename</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">index_basename</span>
+    <span class=nt>out</span><span class=p>:</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">alignment</span>
+    <span class=nt>run</span><span class=p>:</span>
+      <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">CommandLineTool</span>
+      <span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+      <span class=nt>requirements</span><span class=p>:</span>
+        <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">DockerRequirement</span>
+          <span class=nt>dockerPull</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">biocontainers/bowtie2:v2.2.9_cv2</span>
+      <span class=nt>baseCommand</span><span class=p>:</span>
+        <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">bowtie2</span>
+      <span class=nt>stdout</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">$(inputs.fastq.nameroot).sam</span>
+      <span class=nt>arguments</span><span class=p>:</span>
+        <span class="p p-Indicator">-</span> <span class=nt>valueFrom</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">$(inputs.index_dir.dirname)/$(inputs.index_dir.basename)/$(inputs.index_basename)</span>
+          <span class=nt>prefix</span><span class=p>:</span> <span class=s>&#39;-x&#39;</span>
+          <span class=nt>position</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">0</span>
+      <span class=nt>inputs</span><span class=p>:</span>
+        <span class=nt>index_dir</span><span class=p>:</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Directory</span>
+        <span class=nt>index_basename</span><span class=p>:</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">string</span>
+        <span class=nt>fastq</span><span class=p>:</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+          <span class=nt>inputBinding</span><span class=p>:</span>
+            <span class=nt>position</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">1</span>
+            <span class=nt>prefix</span><span class=p>:</span> <span class=s>&#39;-U&#39;</span>
+      <span class=nt>outputs</span><span class=p>:</span>
+        <span class=nt>alignment</span><span class=p>:</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">stdout</span>
+  <span class=nt>samtools_view</span><span class=p>:</span>
+    <span class=nt>in</span><span class=p>:</span>
+      <span class=nt>sam</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">bowtie2/alignment</span>
+    <span class=nt>out</span><span class=p>:</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">bam</span>
+    <span class=nt>run</span><span class=p>:</span>
+      <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">CommandLineTool</span>
+      <span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+      <span class=nt>requirements</span><span class=p>:</span>
+        <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">DockerRequirement</span>
+          <span class=nt>dockerPull</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">biocontainers/samtools:v1.7.0_cv3</span>
+      <span class=nt>stdout</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">$(inputs.sam.nameroot).bam</span>
+      <span class=nt>baseCommand</span><span class=p>:</span>
+        <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">samtools</span>
+        <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">view</span>
+      <span class=nt>inputs</span><span class=p>:</span>
+        <span class=nt>sam</span><span class=p>:</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+          <span class=nt>inputBinding</span><span class=p>:</span>
+            <span class=nt>position</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">0</span>
+      <span class=nt>outputs</span><span class=p>:</span>
+        <span class=nt>bam</span><span class=p>:</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">stdout</span>
+</code></pre></div><p>Why is this inefficient? Because (1) we have to wait for bowtie2 to complete before compressing and (2) we have to transfer the uncompressed file over the network.</p><p>Our first issue would be solved by setting <code>streamable:true</code> for the sam file <a href=https://www.commonwl.org/user_guide/rec-practices/ >as recommended</a>. However, no workflow executor that I am aware of actually makes use of this setting. The folks at arvados, who I spoke to, were not aware of the setting.</p><p>The second issue depends on how the jobs are dispatched. It would not be an issue if both were sent to the same server, but that's not guaranteed and varies depending on the workflow executor and its scheduling algorithm. For example, in my experience SevenBridges runs subworkflows on the same instance, which is preferable here -- although they change their scheduler enough that I wouldn't depend on it.</p><p>For now, we can solve both issues with a unix pipe, like: <code>bowtie2 -x &lt;INDEX&gt; -U &lt;FASTQ_FILE&gt; | samtools view -bS - &gt; out.bam</code>. However, this present a couple of design issues for CWL:</p><ul><li>Shell commands are disabled by default</li><li>We cannot use biocontainers alone, since we need to install multiple binaries to a docker image</li></ul><p>To get around this, we can take advantage of the following:</p><ul><li>Shell commands can be enabled with the <code>ShellCommandRequirement</code></li><li>We can use miniconda to install multiple binaries that are compatible with one another</li></ul><p>This is demonstrated for the command earlier like so:</p><div class=highlight><pre><span></span><code><span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">CommandLineTool</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>requirements</span><span class=p>:</span>
+  <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ShellCommandRequirement</span>
+  <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">DockerRequirement</span>
+    <span class=nt>dockerImageId</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">bowtie2-and-samtools</span>
+    <span class=nt>dockerFile</span><span class=p>:</span> <span class="p p-Indicator">|-</span>
+      <span class=no>FROM continuumio/miniconda3</span>
+      <span class=no>RUN conda config --add channels defaults \</span>
+          <span class=no>&amp;&amp; conda config --add channels bioconda \</span>
+          <span class=no>&amp;&amp; conda config --add channels conda-forge \</span>
+          <span class=no>&amp;&amp; conda install bowtie2 samtools \</span>
+          <span class=no>&amp;&amp; conda clean -pt</span>
+<span class=nt>baseCommand</span><span class=p>:</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">bowtie2</span>
+<span class=nt>stdout</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">$(inputs.fastq.nameroot).sam</span>
+<span class=nt>inputs</span><span class=p>:</span>
+  <span class=nt>index_dir</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Directory</span>
+  <span class=nt>index_basename</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">string</span>
+  <span class=nt>fastq</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+<span class=nt>arguments</span><span class=p>:</span>
+  <span class="p p-Indicator">-</span> <span class=nt>valueFrom</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">$(inputs.index_dir.dirname)/$(inputs.index_dir.basename)/$(inputs.index_basename)</span>
+    <span class=nt>prefix</span><span class=p>:</span> <span class=s>&#39;-x&#39;</span>
+  <span class="p p-Indicator">-</span> <span class=nt>prefix</span><span class=p>:</span> <span class=s>&#39;-U&#39;</span>
+    <span class=nt>valueFrom</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">$(inputs.fastq)</span>
+  <span class="p p-Indicator">-</span> <span class=nt>valueFrom</span><span class=p>:</span> <span class=s>&#39;|&#39;</span>
+    <span class=nt>shellQuote</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">false</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">samtools</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">view</span>
+  <span class="p p-Indicator">-</span> <span class=s>&quot;-&quot;</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>alignment</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">stdout</span>
+</code></pre></div><h2>Performance considerations</h2><p>This docker image is 830 megabytes. 460 of those are from the miniconda3 base image. Depending on how docker images are cached on your server, this may not be performant.</p><p>An alternative that produces smaller docker images would be to copy the binaries from the miniconda3 image to an alpine image. I have avoided doing so because bowtie2 and samtools have dependencies themselves that I found tricky.</p><p>That being said, this design pattern moves everything reliably into a single instance. It gives us another tool to address one of the trickier bottlenecks in CWL: network IO.</p></div></section><script>
+MathJax = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']]
+  }
+};
+document.addEventListener('DOMContentLoaded', (event) => {
+  document.querySelectorAll('pre').forEach((block) => {
+    hljs.highlightBlock(block);
+  });
+});
+</script></div></div></body></html>

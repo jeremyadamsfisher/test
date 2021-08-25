@@ -1,0 +1,212 @@
+<!DOCTYPE html><html lang=en class=has-navbar-fixed-top><head><title>Jeremy Fisher :: Grouping read pairs in the Common Workflow Language</title><meta charset=utf-8><meta name=generator content=Pelican><meta name=viewport content="width=device-width, initial-scale=1"><link rel=apple-touch-icon sizes=180x180 href=/apple-touch-icon.png><link rel=icon type=image/png sizes=32x32 href=/favicon-32x32.png><link rel=icon type=image/png sizes=16x16 href=/favicon-16x16.png><link rel=manifest href=/site.webmanifest><link rel=stylesheet href=https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css><link rel=stylesheet href=./theme/css/bulma.css><link rel=stylesheet href=./theme/css/style-1.0.css><script src=./theme/js/navbar.js></script><link rel=stylesheet href=./theme/highlight/monokai.css><script src=./theme/js/highlight.pack.js></script><script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script><script id=MathJax-script async src=https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js></script></head><body id=index class=home><nav id=main-navbar class="navbar is-light is-fixed-top" role=navigation aria-label="main navigation"><div class=navbar-brand><a href=/ class=navbar-item><strong id=brand>Jeremy Fisher</strong></a><a role=button class="navbar-burger burger" aria-label=menu aria-expanded=false data-target=navbarBasicExample><span aria-hidden=true></span><span aria-hidden=true></span><span aria-hidden=true></span></a></div><div id=navbarBasicExample class=navbar-menu><div class=navbar-start></div><div class=navbar-end><a href=./ class=navbar-item>About</a><a class=navbar-item href=/blog>Blog</a></div></div></nav><div class=j-content-container><div class="j-content content"><section><header><h3><a class=article-title href=./grouping-read-pairs-in-the-common-workflow-language.html rel=bookmark title="Permalink to Grouping read pairs in the Common Workflow Language">Grouping read pairs in the Common Workflow Language</a></h3></header><footer class=post-info><i class="fa fa-calendar"></i><time class=published datetime=2018-01-01T10:02:00+01:00> Mon 01 January 2018 </time></footer><hr><div class=entry-content><h2>Introduction</h2><p>One of the central systems in the technology stack I work with is the Common Workflow Language (CWL).</p><blockquote><p>The Common Workflow Language (CWL) is a specification for describing analysis workflows and tools in a way that makes them portable and scalable across a variety of software and hardware environments, from workstations to cluster, cloud, and high performance computing (HPC) environments.</p></blockquote><p>I disagree that, by describing a workflow in CWL, that workflow becomes scalable. First, you have to define "scattering" logic, such that data that must be processed linearly can also be processed in parallel. Essentially, we define how to scattering in CWL by specifying an input, which is an array of something, and dispatching each element of that array to a worker. Scattering based on inputs like strings, numbers and files are all straight-forward enough.</p><p>However, you may need to scatter structured information, like paired read fastqs generated from <a href=https://www.illumina.com/science/technology/next-generation-sequencing/sequencing-technology.html>Illumina SBS sequencing</a>. So each node gets a pair of files, not just an individual fastq file. This is tricky and rather poorly documented.</p><p>In this tutorial, I will demonstrate how to pair fastq files -- and, by extension, any structured data -- by setting up a dummy workflow. The workflow will consist of two nodes: an <code>ExpressionTool</code> that groups corresponding input fastq's and a <code>CommandLineTool</code> that aligns with a read pair. Finally, we'll gather the output of the <code>CommandLineTool</code> nodes as an output:</p><p><img alt="Alt Text" src=./images/cwl-screenshot.png></p><p>The CommandLineTool will count the number of records in a fastq file using BioPython.</p><h2>Setting up the CommandLineTool</h2><p>CWL is all about defining inputs and outputs to tools that run inside docker. We start with the boilerplate, including the <code>ScatterFeatureRequirement</code> to allow it to scatter.</p><div class=highlight><pre><span></span><code><span class=c1># Workflow.cwl.1</span>
+<span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Workflow</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>requirements</span><span class=p>:</span>
+  <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ScatterFeatureRequirement</span>
+<span class=nt>inputs</span><span class=p>:</span> <span class="p p-Indicator">[]</span>
+<span class=nt>outputs</span><span class=p>:</span> <span class="p p-Indicator">[]</span>
+<span class=nt>steps</span><span class=p>:</span> <span class="p p-Indicator">[]</span>
+</code></pre></div><p>The first step in constructing a pipeline is to determine the start and ends points. Our dummy pipeline will start with a set of fastq files and end up with the number of records in each read pair.</p><div class=highlight><pre><span></span><code><span class=c1># Workflow.cwl.2</span>
+<span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Workflow</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>requirements</span><span class=p>:</span>
+  <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ScatterFeatureRequirement</span>
+<span class=nt>inputs</span><span class=p>:</span>
+  <span class=nt>fastqs</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File[]</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>ReadCounts</span><span class=p>:</span> <span class=err>?</span>
+<span class=nt>steps</span><span class=p>:</span> <span class="p p-Indicator">[]</span>
+</code></pre></div><p>So, how do we go from A to B? From <code>fastqs</code> to <code>ReadCounts</code>?</p><p>We begin by structuring our inputs. We want to take the list of fastqs and output a list of records, each containing the file path to the mated R1 and R2 fastq. Since we are just moving things around, we use the <code>ExpressionTool</code>, rather than the command line tool. This is a best practice.</p><p>Here is the code:</p><div class=highlight><pre><span></span><code><span class=c1># PairReadFiles.cwl</span>
+<span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ExpressionTool</span>
+<span class=nt>requirements</span><span class=p>:</span>
+<span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">InlineJavascriptRequirement</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>inputs</span><span class=p>:</span>
+  <span class=nt>fastqs</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File[]</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>pairedReads</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span>
+      <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">array</span>
+      <span class=nt>items</span><span class=p>:</span>
+        <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">record</span>
+        <span class=nt>fields</span><span class=p>:</span>
+        <span class="p p-Indicator">-</span> <span class=nt>name</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">r1</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+        <span class="p p-Indicator">-</span> <span class=nt>name</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">r2</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+<span class=nt>expression</span><span class=p>:</span> <span class="p p-Indicator">|-</span>
+  <span class=no>${</span>
+      <span class=no>//group by sample name</span>
+      <span class=no>var samples = {};</span>
+      <span class=no>for (var i = 0; i &lt; inputs.fastqs.length; i++) {</span>
+        <span class=no>var = inputs.fastqs[i];</span>
+        <span class=no>// this regex will match files from basespace, e.g. SAMPLE_R1_.fastq.gz</span>
+        <span class=no>var reg_groups = f.basename.match(/^(.+)(_R[1|2]_)(.+)$/);</span>
+        <span class=no>var samplename = reg_groups[1];</span>
+        <span class=no>var flag = reg_groups[2];</span>
+        <span class=no>var ext = reg_groups[3];</span>
+
+        <span class=no>var readPairId = samplename + ext;</span>
+
+        <span class=no>if (!samples[readPairId]) {</span>
+            <span class=no>samples[readPairId] = {r1: null, r2: null};</span>
+        <span class=no>} if (R === &quot;_R1_&quot;) {</span>
+            <span class=no>samples[readPairId].r1 = f;</span>
+        <span class=no>} else if (R === &quot;_R2_&quot;) {</span>
+            <span class=no>samples[readPairId].r2 = f;</span>
+        <span class=no>}</span>
+      <span class=no>}</span>
+      <span class=no>// pivot</span>
+      <span class=no>var pairedReads = Object.keys(samples).map(function(key){return(samples[k]);})</span>
+      <span class=no>// set the PairedReads record defined in `outputs` equal to the local PairedReads variable</span>
+      <span class=no>return {pairedReads: pairedReads};</span>
+  <span class=no>}</span>
+</code></pre></div><h2>An aside...</h2><p>It is instructive to see where this code "lives." This....</p><div class=highlight><pre><span></span><code><span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ExpressionTool</span>
+<span class=nt>requirements</span><span class=p>:</span>
+<span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">InlineJavascriptRequirement</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>inputs</span><span class=p>:</span> <span class="p p-Indicator">[]</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>anOutput</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">int</span>
+<span class=nt>expression</span><span class=p>:</span> <span class="p p-Indicator">|</span>
+  <span class=no>${</span>
+      <span class=no>return ({anOutput: 0});</span>
+  <span class=no>}</span>
+</code></pre></div><p>...gets turned into the following:</p><div class=highlight><pre><span></span><code>  <span class=s2>&quot;use strict&quot;</span><span class=p>;</span>
+<span class=kd>var</span> <span class=nx>inputs</span> <span class=o>=</span> <span class=p>{};</span>
+<span class=kd>var</span> <span class=nx>self</span> <span class=o>=</span> <span class=kc>null</span><span class=p>;</span>
+<span class=kd>var</span> <span class=nx>runtime</span> <span class=o>=</span> <span class=p>{</span>
+    <span class=s2>&quot;outdirSize&quot;</span><span class=o>:</span> <span class=mf>1024</span><span class=p>,</span>
+    <span class=s2>&quot;ram&quot;</span><span class=o>:</span> <span class=mf>1024</span><span class=p>,</span>
+    <span class=s2>&quot;tmpdirSize&quot;</span><span class=o>:</span> <span class=mf>1024</span><span class=p>,</span>
+    <span class=s2>&quot;cores&quot;</span><span class=o>:</span> <span class=mf>1</span><span class=p>,</span>
+    <span class=s2>&quot;tmpdir&quot;</span><span class=o>:</span> <span class=s2>&quot;/private/tmp/tmpM9VDWF&quot;</span><span class=p>,</span>
+    <span class=s2>&quot;outdir&quot;</span><span class=o>:</span> <span class=s2>&quot;/private/tmp/tmpz8v2Fk&quot;</span>
+<span class=p>};</span>
+<span class=p>(</span><span class=kd>function</span><span class=p>(){</span>
+    <span class=k>return</span> <span class=p>({</span><span class=nx>anOutput</span><span class=o>:</span> <span class=mf>0</span><span class=p>});</span>
+<span class=p>})()</span>
+</code></pre></div><p>So, <code>inputs</code>, <code>self</code> and <code>runtime</code> are all variables we can play with. Notably, self is an array of the globbed output files. That only applies to CommandLineTools; it is null here, and we can ignore it.</p><h2>and back...</h2><p>Notice the syntax to define a record array:</p><div class=highlight><pre><span></span><code><span class=nt>PairedReads</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span>
+      <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">array</span>
+      <span class=nt>items</span><span class=p>:</span>
+        <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">record</span>
+</code></pre></div><p>I feel that first <code>type</code> is counter-intuitive; we'll just have to remember it. Underneath, we define an array of key-value pairs that define the output schema: an R1 file and an R2 file.</p><p>Next, we have the code. This expression iterates over the list of fastq files, generates a string that uniquely identifies the read pair, and pairs the files in a javascript object. After flattening out this object into a list, it outputs this list as value contained inside a javascript object literal. Finally, the values of this object get slotted into the proper output defined in the CWL document.</p><p>Once the read pairing node is complete, we wire it into the workflow cwl.</p><div class=highlight><pre><span></span><code><span class=c1># Workflow.cwl.3</span>
+<span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Workflow</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>requirements</span><span class=p>:</span>
+  <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ScatterFeatureRequirement</span>
+<span class=nt>inputs</span><span class=p>:</span>
+  <span class=nt>fastqs</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File[]</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>readCounts</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">int[]</span>
+<span class=nt>steps</span><span class=p>:</span>
+  <span class=nt>PairReadFiles</span><span class=p>:</span>
+    <span class=nt>run</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">PairReadFiles.cwl</span>
+    <span class=nt>in</span><span class=p>:</span>
+      <span class=nt>fastqs</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">fastqs</span>
+    <span class=nt>out</span><span class=p>:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">pairedReads</span>
+</code></pre></div><p>Now, we have a structured list that goes nowhere. We'll define the next node to take this list and process this.</p><div class=highlight><pre><span></span><code><span class=c1># ProcessMatedReadFastqs.cwl</span>
+<span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">CommandLineTool</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>requirements</span><span class=p>:</span>
+<span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">InlineJavascriptRequirement</span>
+<span class=nt>hints</span><span class=p>:</span>
+  <span class=nt>DockerRequirement</span><span class=p>:</span>
+    <span class=nt>dockerPull</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">readpaircounter</span>
+<span class=nt>baseCommand</span><span class=p>:</span>
+<span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">count_reads.py</span>
+<span class=nt>inputs</span><span class=p>:</span>
+  <span class=nt>pairedRead</span><span class=p>:</span>
+    <span class=nt>inputBinding</span><span class=p>:</span>
+      <span class=nt>position</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">0</span>
+    <span class=nt>type</span><span class=p>:</span>
+      <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">record</span>
+      <span class=nt>fields</span><span class=p>:</span>
+        <span class="p p-Indicator">-</span> <span class=nt>name</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">r1</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+          <span class=nt>inputBinding</span><span class=p>:</span>
+            <span class=nt>prefix</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">--r1</span>
+            <span class=nt>position</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">1</span>
+        <span class="p p-Indicator">-</span> <span class=nt>name</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">r2</span>
+          <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File</span>
+          <span class=nt>inputBinding</span><span class=p>:</span>
+            <span class=nt>prefix</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">--r2</span>
+            <span class=nt>position</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>readCount</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">stdout</span>
+</code></pre></div><div class=highlight><pre><span></span><code><span class=c># Dockerfile</span>
+<span class=k>FROM</span> <span class=s>python</span>
+<span class=k>RUN</span> pip install biopython
+<span class=k>ADD</span> count_reads.py /usr/local/bin
+<span class=k>RUN</span> chmod +x /usr/local/bin/count_reads.py
+<span class=k>CMD</span> sh
+</code></pre></div><div class=highlight><pre><span></span><code><span class=c1># count_reads.py</span>
+<span class=c1>#!/usr/bin/env python</span>
+
+<span class=kn>import</span> <span class=nn>sys</span>
+<span class=kn>import</span> <span class=nn>argparse</span>
+<span class=kn>from</span> <span class=nn>Bio</span> <span class=kn>import</span> <span class=n>SeqIO</span>
+
+<span class=k>def</span> <span class=nf>main</span><span class=p>():</span>
+    <span class=n>parser</span> <span class=o>=</span> <span class=n>argparse</span><span class=o>.</span><span class=n>ArgumentParser</span><span class=p>()</span>
+    <span class=n>parser</span><span class=o>.</span><span class=n>add_argument</span><span class=p>(</span><span class=s1>&#39;--r1&#39;</span><span class=p>,</span> <span class=n>required</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+    <span class=n>parser</span><span class=o>.</span><span class=n>add_argument</span><span class=p>(</span><span class=s1>&#39;--r2&#39;</span><span class=p>,</span> <span class=n>required</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+    <span class=n>args</span> <span class=o>=</span> <span class=n>parser</span><span class=o>.</span><span class=n>parse_args</span><span class=p>()</span>
+
+    <span class=n>fastq_record_count</span> <span class=o>=</span> <span class=mi>0</span>
+    <span class=k>for</span> <span class=n>rx</span> <span class=ow>in</span> <span class=p>(</span><span class=n>args</span><span class=o>.</span><span class=n>r1</span><span class=p>,</span> <span class=n>args</span><span class=o>.</span><span class=n>r2</span><span class=p>):</span>
+        <span class=k>with</span> <span class=nb>open</span><span class=p>(</span><span class=n>rx</span><span class=p>)</span> <span class=k>as</span> <span class=n>infile</span><span class=p>:</span>
+            <span class=n>fastq_record_count</span> <span class=o>+=</span> <span class=nb>sum</span><span class=p>(</span><span class=mi>1</span> <span class=k>for</span> <span class=n>record</span> <span class=ow>in</span> <span class=n>SeqIO</span><span class=o>.</span><span class=n>parse</span><span class=p>(</span><span class=n>infile</span><span class=p>,</span> <span class=s1>&#39;fastq&#39;</span><span class=p>))</span>
+
+    <span class=n>sys</span><span class=o>.</span><span class=n>stdout</span><span class=o>.</span><span class=n>write</span><span class=p>(</span><span class=n>fastq_record_count</span><span class=p>)</span>
+
+<span class=k>if</span> <span class=vm>__name__</span> <span class=o>==</span> <span class=s1>&#39;__main__&#39;</span><span class=p>:</span>
+    <span class=n>main</span><span class=p>()</span>
+</code></pre></div><p>I won't bother here to explain my code, as there is decent documentation about CommandTools. However, I do want to point out a difference from how we normally define the input. Namely, instead of defining them just below the <code>input</code> key, we put it in a record like so:</p><div class=highlight><pre><span></span><code><span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">record</span>
+  <span class="l l-Scalar l-Scalar-Plain">fields</span><span class="p p-Indicator">:</span>
+    <span class="p p-Indicator">-</span> <span class=nt>name</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">...</span>
+</code></pre></div><p>You may notice a disconnect. In the previous node, we created a list of records; whereas, here, we accept only a single record. We need special wiring here that breaks apart the list of records so each node receives only one record. This is accomplished with the <code>scatter</code> feature.</p><div class=highlight><pre><span></span><code><span class=c1># Workflow.cwl.4</span>
+<span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">Workflow</span>
+<span class=nt>cwlVersion</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class=nt>requirements</span><span class=p>:</span>
+  <span class="p p-Indicator">-</span> <span class=nt>class</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ScatterFeatureRequirement</span>
+<span class=nt>inputs</span><span class=p>:</span>
+  <span class=nt>fastqs</span><span class=p>:</span>
+    <span class=nt>type</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">File[]</span>
+<span class=nt>outputs</span><span class=p>:</span>
+  <span class=nt>readCounts</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ProcessReadFile/readCount</span>
+<span class=nt>steps</span><span class=p>:</span>
+  <span class=nt>PairReadFiles</span><span class=p>:</span>
+    <span class=nt>run</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">PairReadFiles.cwl</span>
+    <span class=nt>in</span><span class=p>:</span>
+      <span class=nt>fastqs</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">fastqs</span>
+    <span class=nt>out</span><span class=p>:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">pairedReads</span>
+  <span class=nt>ProcessReadFile</span><span class=p>:</span>
+    <span class=nt>run</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">ProcessMatedReadFastqs.cwl</span>
+    <span class=nt>in</span><span class=p>:</span>
+      <span class=nt>pairedRead</span><span class=p>:</span> <span class="l l-Scalar l-Scalar-Plain">PairReadFiles/pairedReads</span>
+    <span class=nt>out</span><span class=p>:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">readCount</span>
+    <span class=nt>scatter</span><span class=p>:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">pairedRead</span>
+</code></pre></div><p>There ya go. We have paired our reads in a way that allows scattering across a cluster.</p><h2>Reflections</h2><p>Is it all worth it?</p><p>There is one major benefit to CWL. Once written, I will be able to run this workflow anywhere, forever. You can't say that about a lot of code.</p><p>But that assumes that CWL stabilizes as a language.</p><p>Once, I connected an enum of strings to a string sink. This is fine in the latest version of cwltool. But, later a user reported that he could no longer run our pipeline. I had to refactor the cwl documents -- so that both tools accepted an enum input, to be backwards compatible.</p><p>That example applies to the marginal less well-thought-out aspects of the language. But it is illustrative. I often wonder whether the language changes enough to break compatibility with cwl documents written today. If so, what's the point? I suggest developers and bioinformaticians wait and see before adopting CWL.</p><p>My other thought: this is very verbose. We have written one hundred and eighty-one lines of code over five files to pair read files and do trivial processing.</p><p>Snakemake seems more promising, since it's language constructs strike me as expressive and concise. I haven't attempted to run the snakemake workflow on a cluster, however. It uses Kubernetes, though, so any cloud provider should support it.</p><p>Day to day, I will continue to use CWL. But, for 2018, I do not recommend CWL. For the next project, I will seriously consider snakemake and, a few years down the line, re-evaluate CWL.</p></div></section><script>
+MathJax = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']]
+  }
+};
+document.addEventListener('DOMContentLoaded', (event) => {
+  document.querySelectorAll('pre').forEach((block) => {
+    hljs.highlightBlock(block);
+  });
+});
+</script></div></div></body></html>
